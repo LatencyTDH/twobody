@@ -2,6 +2,8 @@
 
 This is an interactive 3D simulation demonstrating the gravitational interaction between two bodies, built using three.js.
 
+The visualization can be viewed at https://latencytdh.github.io/twobody.
+
 ## Features
 
 * **3D Visualization:** Shows two celestial bodies orbiting each other in 3D space.
