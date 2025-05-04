@@ -30,7 +30,7 @@
             align-items: center;
             gap: 10px 15px;
             width: 90%;
-            max-width: 500px; /* Increased max-width slightly */
+            max-width: 500px;
         }
         label {
             color: #e0e0e0;
@@ -55,7 +55,6 @@
          input[type="range"].mass2-slider {
              background: linear-gradient(90deg, #6bbdff, #0099e6); /* Brighter Blue/Cyan */
         }
-         /* Style for the new speed slider */
          input[type="range"].speed-slider {
              background: linear-gradient(90deg, #4caf50, #cddc39); /* Green/Lime gradient */
         }
@@ -86,6 +85,24 @@
             text-align: right;
             font-variant-numeric: tabular-nums;
         }
+        /* Simple error display style */
+        .error-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(255, 0, 0, 0.8);
+            color: white;
+            z-index: 1000;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        .runtime-error-display {
+             /* Inherits from error-display, positions differently */
+             bottom: 80px; /* Position above controls */
+             top: auto; /* Override top positioning */
+             background-color: rgba(255, 100, 0, 0.8); /* Different color for runtime */
+        }
     </style>
 </head>
 <body class="bg-black text-white">
@@ -107,6 +124,7 @@
         <input type="range" id="speedSlider" class="speed-slider" min="0.1" max="10" step="0.1" value="1.0">
         <span id="speedValueDisplay" class="valueDisplay">1.0x</span>
     </div>
+    <div id="errorContainer"></div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -121,288 +139,259 @@
         let G = 1.0;
         let m1 = 100;
         let m2 = 1;
-        const dt = 0.01; // Base time step
-        let simulationSpeed = 1.0; // Simulation speed multiplier
+        const dt = 0.01;
+        let simulationSpeed = 1.0;
 
         // Initial state
         const initialG = G;
         const initialM1 = m1;
         const initialM2 = m2;
-
-        // Place bodies relative to the initial center of mass
         const initialDistance = 22;
         let pos1 = new THREE.Vector3(-initialDistance * (initialM2 / (initialM1 + initialM2)), 0, 0);
         let pos2 = new THREE.Vector3(initialDistance * (initialM1 / (initialM1 + initialM2)), 0, 0);
-
-        // Calculate initial velocities
         const totalMass = initialM1 + initialM2;
         const distance = pos2.distanceTo(pos1);
-        const vTotal = Math.sqrt(initialG * totalMass / distance);
+        const vTotal = distance > 0 ? Math.sqrt(initialG * totalMass / distance) : 0;
         let vel1 = new THREE.Vector3(0, -vTotal * (initialM2 / totalMass) * 0.95, 0);
         let vel2 = new THREE.Vector3(0, vTotal * (initialM1 / totalMass) * 0.95, 0);
-
-        // Store initial state for reset
         const initialPos1 = pos1.clone();
         const initialVel1 = vel1.clone();
         const initialPos2 = pos2.clone();
         const initialVel2 = vel2.clone();
 
+        // Camera auto-framing parameters
+        const cameraPadding = 1.5;
+        const cameraLerpFactor = 0.05;
+        let animationFrameId = null;
+
+        // Function to display errors in the UI
+        function displayError(message, type = 'init') {
+            const errorContainer = document.getElementById('errorContainer');
+            if (!errorContainer) return;
+            const errorId = type + 'ErrorDiv';
+            let errorDiv = document.getElementById(errorId);
+            if (!errorDiv) {
+                errorDiv = document.createElement('div');
+                errorDiv.id = errorId;
+                errorDiv.classList.add('error-display');
+                if (type === 'runtime') { errorDiv.classList.add('runtime-error-display'); }
+                errorContainer.appendChild(errorDiv);
+            }
+            errorDiv.textContent = `${type === 'init' ? 'Initialization' : 'Runtime'} Error: ${message} (Check console)`;
+        }
+
         function init() {
-            scene = new THREE.Scene();
+            try {
+                scene = new THREE.Scene();
+                createStarfield();
 
-            // --- Starfield Background ---
-            createStarfield();
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+                camera.position.set(0, 35, 60);
 
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-            camera.position.set(0, 35, 60);
-            camera.lookAt(scene.position);
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.toneMapping = THREE.ACESFilmicToneMapping;
+                renderer.outputEncoding = THREE.sRGBEncoding;
+                document.getElementById('container').appendChild(renderer.domElement);
 
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.toneMapping = THREE.ACESFilmicToneMapping;
-            renderer.outputEncoding = THREE.sRGBEncoding;
-            document.getElementById('container').appendChild(renderer.domElement);
+                // Lighting
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+                scene.add(ambientLight);
+                const pointLight = new THREE.PointLight(0xffffff, 1.8, 1000, 2);
+                pointLight.position.set(20, 40, 30);
+                scene.add(pointLight);
 
-            // --- Lighting ---
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
-            scene.add(ambientLight);
-            const pointLight = new THREE.PointLight(0xffffff, 1.8, 1000, 2);
-            pointLight.position.set(20, 40, 30);
-            scene.add(pointLight);
+                // Body Creation
+                const geometry1 = new THREE.SphereGeometry(2, 48, 48);
+                const material1 = new THREE.MeshStandardMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 0.6, metalness: 0.3, roughness: 0.4 });
+                body1 = new THREE.Mesh(geometry1, material1);
+                body1.position.copy(pos1);
+                scene.add(body1);
+                const starLight = new THREE.PointLight(0xffccaa, 0.5, 15, 2);
+                body1.add(starLight);
 
-            // --- Body Creation ---
-            // Body 1
-            const geometry1 = new THREE.SphereGeometry(2, 48, 48);
-            const material1 = new THREE.MeshStandardMaterial({
-                color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 0.6,
-                metalness: 0.3, roughness: 0.4,
-            });
-            body1 = new THREE.Mesh(geometry1, material1);
-            body1.position.copy(pos1);
-            scene.add(body1);
-            const starLight = new THREE.PointLight(0xffccaa, 0.5, 15, 2);
-            body1.add(starLight);
+                const geometry2 = new THREE.SphereGeometry(0.6, 48, 48);
+                const material2 = new THREE.MeshStandardMaterial({ color: 0x0099ff, metalness: 0.1, roughness: 0.6 });
+                body2 = new THREE.Mesh(geometry2, material2);
+                body2.position.copy(pos2);
+                scene.add(body2);
 
-            // Body 2
-            const geometry2 = new THREE.SphereGeometry(0.6, 48, 48);
-            const material2 = new THREE.MeshStandardMaterial({
-                color: 0x0099ff, metalness: 0.1, roughness: 0.6,
-            });
-            body2 = new THREE.Mesh(geometry2, material2);
-            body2.position.copy(pos2);
-            scene.add(body2);
+                // Orbit Trails
+                trail1 = createTrail(0xffd700, MAX_TRAIL_POINTS);
+                trail2 = createTrail(0x0099ff, MAX_TRAIL_POINTS);
+                scene.add(trail1.line); scene.add(trail2.line);
+                updateTrail(trail1, body1.position); updateTrail(trail2, body2.position);
 
-            // --- Orbit Trails ---
-            trail1 = createTrail(0xffd700, MAX_TRAIL_POINTS);
-            trail2 = createTrail(0x0099ff, MAX_TRAIL_POINTS);
-            scene.add(trail1.line);
-            scene.add(trail2.line);
-            updateTrail(trail1, body1.position);
-            updateTrail(trail2, body2.position);
+                // Controls
+                controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.screenSpacePanning = false;
+                controls.target.copy(pos1.clone().add(pos2).multiplyScalar(0.5));
+                controls.update();
 
-            // --- Controls ---
-            controls = new OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.screenSpacePanning = false;
-            controls.minDistance = 5;
-            controls.maxDistance = 300;
+                // Sliders
+                setupSliders();
 
-            // --- Slider Event Listeners ---
-            setupSliders(); // Sets up all sliders including the new speed slider
+                // Initial Resize Call
+                onWindowResize();
+                window.addEventListener('resize', onWindowResize, false);
 
-            window.addEventListener('resize', onWindowResize, false);
+            } catch (error) {
+                console.error("Error during initialization:", error);
+                displayError(error.message, 'init');
+                throw error;
+            }
         }
 
         function createStarfield() {
-            const starQty = 10000;
-            const positions = [];
+            const starQty = 10000; const positions = [];
             for (let i = 0; i < starQty; i++) {
-                const x = THREE.MathUtils.randFloatSpread(1500);
-                const y = THREE.MathUtils.randFloatSpread(1500);
-                const z = THREE.MathUtils.randFloatSpread(1500);
+                const x = THREE.MathUtils.randFloatSpread(1500); const y = THREE.MathUtils.randFloatSpread(1500); const z = THREE.MathUtils.randFloatSpread(1500);
                 positions.push(x, y, z);
             }
-            const starGeometry = new THREE.BufferGeometry();
-            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            const starMaterial = new THREE.PointsMaterial({
-                color: 0xffffff, size: 0.7, sizeAttenuation: true,
-                transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending
-            });
-            starField = new THREE.Points(starGeometry, starMaterial);
-            scene.add(starField);
+            const starGeometry = new THREE.BufferGeometry(); starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.7, sizeAttenuation: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending });
+            starField = new THREE.Points(starGeometry, starMaterial); scene.add(starField);
         }
 
         function setupSliders() {
-            // Gravity Slider
-            const gSlider = document.getElementById('gSlider');
-            const gValueDisplay = document.getElementById('gValueDisplay');
-            gSlider.value = G;
-            gValueDisplay.textContent = G.toFixed(1);
-            gSlider.addEventListener('input', (event) => {
-                G = parseFloat(event.target.value);
-                gValueDisplay.textContent = G.toFixed(1);
-            });
-
-            // Mass 1 Slider
-            const m1Slider = document.getElementById('m1Slider');
-            const m1ValueDisplay = document.getElementById('m1ValueDisplay');
-            m1Slider.value = m1;
-            m1ValueDisplay.textContent = m1.toFixed(0);
-            m1Slider.addEventListener('input', (event) => {
-                m1 = parseFloat(event.target.value);
-                m1ValueDisplay.textContent = m1.toFixed(0);
-                const scale1 = Math.max(0.1, Math.cbrt(m1 / initialM1));
-                body1.scale.set(scale1, scale1, scale1);
-            });
-
-            // Mass 2 Slider
-            const m2Slider = document.getElementById('m2Slider');
-            const m2ValueDisplay = document.getElementById('m2ValueDisplay');
-            m2Slider.value = m2;
-            m2ValueDisplay.textContent = m2.toFixed(0);
-            m2Slider.addEventListener('input', (event) => {
-                m2 = parseFloat(event.target.value);
-                m2ValueDisplay.textContent = m2.toFixed(0);
-                const scale2 = Math.max(0.1, Math.cbrt(m2 / initialM2));
-                body2.scale.set(scale2, scale2, scale2);
-            });
-
-            // Speed Slider -- NEW --
-            const speedSlider = document.getElementById('speedSlider');
-            const speedValueDisplay = document.getElementById('speedValueDisplay');
-            speedSlider.value = simulationSpeed; // Set initial value
-            speedValueDisplay.textContent = simulationSpeed.toFixed(1) + 'x'; // Set initial display text
-            speedSlider.addEventListener('input', (event) => {
-                simulationSpeed = parseFloat(event.target.value);
-                speedValueDisplay.textContent = simulationSpeed.toFixed(1) + 'x'; // Update display text
-            });
-
-            // Set initial visual scales
-            const initialScale1 = Math.max(0.1, Math.cbrt(m1 / initialM1));
-            body1.scale.set(initialScale1, initialScale1, initialScale1);
-            const initialScale2 = Math.max(0.1, Math.cbrt(m2 / initialM2));
-            body2.scale.set(initialScale2, initialScale2, initialScale2);
+            const gSlider = document.getElementById('gSlider'); const gValueDisplay = document.getElementById('gValueDisplay');
+            gSlider.value = G; gValueDisplay.textContent = G.toFixed(1); gSlider.addEventListener('input', (e) => { G = parseFloat(e.target.value); gValueDisplay.textContent = G.toFixed(1); });
+            const m1Slider = document.getElementById('m1Slider'); const m1ValueDisplay = document.getElementById('m1ValueDisplay');
+            m1Slider.value = m1; m1ValueDisplay.textContent = m1.toFixed(0); m1Slider.addEventListener('input', (e) => { m1 = parseFloat(e.target.value); m1ValueDisplay.textContent = m1.toFixed(0); const s = Math.max(0.1, Math.cbrt(m1 / initialM1)); body1.scale.set(s, s, s); });
+            const m2Slider = document.getElementById('m2Slider'); const m2ValueDisplay = document.getElementById('m2ValueDisplay');
+            m2Slider.value = m2; m2ValueDisplay.textContent = m2.toFixed(0); m2Slider.addEventListener('input', (e) => { m2 = parseFloat(e.target.value); m2ValueDisplay.textContent = m2.toFixed(0); const s = Math.max(0.1, Math.cbrt(m2 / initialM2)); body2.scale.set(s, s, s); });
+            const speedSlider = document.getElementById('speedSlider'); const speedValueDisplay = document.getElementById('speedValueDisplay');
+            speedSlider.value = simulationSpeed; speedValueDisplay.textContent = simulationSpeed.toFixed(1) + 'x'; speedSlider.addEventListener('input', (e) => { simulationSpeed = parseFloat(e.target.value); speedValueDisplay.textContent = simulationSpeed.toFixed(1) + 'x'; });
+            const s1 = Math.max(0.1, Math.cbrt(m1 / initialM1)); body1.scale.set(s1, s1, s1);
+            const s2 = Math.max(0.1, Math.cbrt(m2 / initialM2)); body2.scale.set(s2, s2, s2);
         }
 
-
         function createTrail(color, maxPoints) {
-            const points = [];
-            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const points = []; const geometry = new THREE.BufferGeometry().setFromPoints(points);
             const material = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.6 });
-            const line = new THREE.Line(geometry, material);
-            line.frustumCulled = false;
+            const line = new THREE.Line(geometry, material); line.frustumCulled = false;
             return { line, geometry, points, maxPoints };
         }
 
         function updateTrail(trail, newPosition) {
-            const { points, geometry, maxPoints } = trail;
-            points.push(newPosition.clone());
-            if (points.length > maxPoints) {
-                points.shift();
-            }
-            geometry.setFromPoints(points);
-            geometry.attributes.position.needsUpdate = true;
+            const { points, geometry, maxPoints } = trail; points.push(newPosition.clone());
+            if (points.length > maxPoints) { points.shift(); }
+            geometry.setFromPoints(points); geometry.attributes.position.needsUpdate = true;
         }
 
         function resetSimulation() {
-            // Reset physics state
-            pos1.copy(initialPos1);
-            vel1.copy(initialVel1);
-            pos2.copy(initialPos2);
-            vel2.copy(initialVel2);
-
-            // Keep current slider values for G, m1, m2, and speed
-            body1.position.copy(pos1);
-            body2.position.copy(pos2);
-
-            // Reset visual scale based on current slider mass vs initial mass
-            const scale1 = Math.max(0.1, Math.cbrt(m1 / initialM1));
-            body1.scale.set(scale1, scale1, scale1);
-            const scale2 = Math.max(0.1, Math.cbrt(m2 / initialM2));
-            body2.scale.set(scale2, scale2, scale2);
-
-            // Reset trails
-            trail1.points = [pos1.clone()];
-            trail2.points = [pos2.clone()];
-            trail1.geometry.setFromPoints(trail1.points);
-            trail2.geometry.setFromPoints(trail2.points);
-            trail1.geometry.attributes.position.needsUpdate = true;
-            trail2.geometry.attributes.position.needsUpdate = true;
-
-            console.log("Simulation Reset (Positions/Velocities)");
+            pos1.copy(initialPos1); vel1.copy(initialVel1); pos2.copy(initialPos2); vel2.copy(initialVel2);
+            body1.position.copy(pos1); body2.position.copy(pos2);
+            const s1 = Math.max(0.1, Math.cbrt(m1 / initialM1)); body1.scale.set(s1, s1, s1);
+            const s2 = Math.max(0.1, Math.cbrt(m2 / initialM2)); body2.scale.set(s2, s2, s2);
+            trail1.points = [pos1.clone()]; trail2.points = [pos2.clone()];
+            trail1.geometry.setFromPoints(trail1.points); trail2.geometry.setFromPoints(trail2.points);
+            trail1.geometry.attributes.position.needsUpdate = true; trail2.geometry.attributes.position.needsUpdate = true;
+            const targetCenter = pos1.clone().add(pos2).multiplyScalar(0.5); controls.target.lerp(targetCenter, 0.1);
+            console.log("Simulation Reset");
         }
 
-
         function updatePhysics() {
-            // Calculate effective time step based on speed slider
-            const effectiveDt = dt * simulationSpeed;
+            if (isNaN(G) || isNaN(m1) || isNaN(m2) || m1 <= 0 || m2 <= 0) return;
+            const effectiveDt = dt * simulationSpeed; if (isNaN(effectiveDt) || effectiveDt <= 0) return;
+            const rVec = new THREE.Vector3().subVectors(pos2, pos1); const rMagSq = rVec.lengthSq(); if (isNaN(rMagSq) || rMagSq <= 0) return;
+            const radius1 = body1.geometry.parameters.radius * body1.scale.x; const radius2 = body2.geometry.parameters.radius * body2.scale.x; if (isNaN(radius1) || isNaN(radius2)) return;
+            const collisionThresholdSq = (radius1 + radius2) * (radius1 + radius2) * 1.1; if (rMagSq < Math.max(0.5, collisionThresholdSq)) { return; }
+            const fMag = (G * m1 * m2) / rMagSq; if (isNaN(fMag)) return;
+            const fVec = rVec.normalize().multiplyScalar(fMag); const acc1 = new THREE.Vector3().copy(fVec).divideScalar(m1); const acc2 = new THREE.Vector3().copy(fVec).divideScalar(m2).negate(); if (isNaN(acc1.x) || isNaN(acc2.x)) return;
+            vel1.addScaledVector(acc1, effectiveDt); vel2.addScaledVector(acc2, effectiveDt); if (isNaN(vel1.x) || isNaN(vel2.x)) return;
+            pos1.addScaledVector(vel1, effectiveDt); pos2.addScaledVector(vel2, effectiveDt); if (isNaN(pos1.x) || isNaN(pos2.x)) return;
+            body1.position.copy(pos1); body2.position.copy(pos2);
+            updateTrail(trail1, body1.position); updateTrail(trail2, body2.position);
+        }
 
-            const rVec = new THREE.Vector3().subVectors(pos2, pos1);
-            const rMagSq = rVec.lengthSq();
+        function adjustCamera() {
+            if (!body1 || !body2 || !controls || !camera || !camera.aspect || camera.aspect <= 0 || isNaN(camera.aspect)) { return; }
 
-            // Collision detection/avoidance
-            const radius1 = body1.geometry.parameters.radius * body1.scale.x;
-            const radius2 = body2.geometry.parameters.radius * body2.scale.x;
-            const collisionThresholdSq = (radius1 + radius2) * (radius1 + radius2) * 1.1;
-            if (rMagSq < Math.max(0.5, collisionThresholdSq)) {
-                 return; // Stop physics update if too close
+            try {
+                const center = new THREE.Vector3().addVectors(body1.position, body2.position).multiplyScalar(0.5);
+                if (isNaN(center.x)) { console.error("AdjustCamera: Center NaN."); return; }
+
+                const dist = body1.position.distanceTo(body2.position);
+                const radius1 = body1.geometry.parameters.radius * body1.scale.x;
+                const radius2 = body2.geometry.parameters.radius * body2.scale.x;
+                if (isNaN(dist) || isNaN(radius1) || isNaN(radius2)) { console.error("AdjustCamera: Dist/Radius NaN."); return; }
+                const boundingRadius = (dist / 2) + Math.max(radius1, radius2);
+                if (isNaN(boundingRadius) || boundingRadius <= 0) { console.error("AdjustCamera: BoundingRadius invalid:", boundingRadius); return; }
+
+                const fovRad = THREE.MathUtils.degToRad(camera.fov);
+                const aspect = camera.aspect;
+                const effectiveFov = (aspect >= 1) ? fovRad : 2 * Math.atan(Math.tan(fovRad / 2) / aspect);
+                if (isNaN(effectiveFov) || effectiveFov <= 0) { console.error("AdjustCamera: EffectiveFOV invalid:", effectiveFov); return; }
+                const sinHalfFov = Math.sin(effectiveFov / 2);
+                if (isNaN(sinHalfFov) || sinHalfFov <= 0) { console.error("AdjustCamera: SinHalfFov invalid:", sinHalfFov); return; }
+
+                // Calculate the distance required to fit the bounding sphere
+                const requiredDistance = (boundingRadius * cameraPadding) / sinHalfFov;
+                if (!isFinite(requiredDistance) || requiredDistance <= 0) { console.error("AdjustCamera: RequiredDistance invalid:", requiredDistance); return; }
+
+                // --- MODIFICATION START ---
+                // Get the camera's current distance from the target
+                const currentDistance = camera.position.distanceTo(controls.target);
+                if (isNaN(currentDistance)) { console.error("AdjustCamera: CurrentDistance NaN."); return; }
+
+                // Determine the distance to use for the camera position calculation.
+                // Use the larger of the current distance or the required distance.
+                // This ensures the camera zooms out if needed, but doesn't zoom in automatically.
+                const distanceToUse = Math.max(currentDistance, requiredDistance);
+                // --- MODIFICATION END ---
+
+
+                // Keep the camera's current direction relative to the target
+                const cameraDirection = new THREE.Vector3().subVectors(camera.position, controls.target);
+                if (cameraDirection.lengthSq() < 0.0001) { cameraDirection.set(0, 0.5, 1); } // Default direction
+                cameraDirection.normalize();
+
+                // Calculate the target camera position using the determined distance (ensuring minimum distance)
+                const targetPosition = center.clone().add(cameraDirection.multiplyScalar(Math.max(5, distanceToUse))); // Use distanceToUse here
+                if (isNaN(targetPosition.x)) { console.error("AdjustCamera: Target Position NaN."); return; }
+
+                // Smoothly interpolate camera position and target
+                camera.position.lerp(targetPosition, cameraLerpFactor);
+                controls.target.lerp(center, cameraLerpFactor);
+
+            } catch (error) {
+                console.error("Error during camera adjustment:", error);
+                displayError(error.message, 'runtime');
             }
-
-            // Calculate forces and accelerations
-            if (m1 <= 0 || m2 <= 0) return;
-            const fMag = (G * m1 * m2) / rMagSq;
-            const fVec = rVec.normalize().multiplyScalar(fMag);
-            const acc1 = new THREE.Vector3().copy(fVec).divideScalar(m1);
-            const acc2 = new THREE.Vector3().copy(fVec).divideScalar(m2).negate();
-
-            // Update velocities using effective time step
-            vel1.addScaledVector(acc1, effectiveDt);
-            vel2.addScaledVector(acc2, effectiveDt);
-
-            // Update positions using effective time step
-            pos1.addScaledVector(vel1, effectiveDt);
-            pos2.addScaledVector(vel2, effectiveDt);
-
-            // Update mesh positions
-            body1.position.copy(pos1);
-            body2.position.copy(pos2);
-
-            // Update trails
-            updateTrail(trail1, body1.position);
-            updateTrail(trail2, body2.position);
         }
 
         function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (camera) {
+                const width = window.innerWidth; const height = window.innerHeight;
+                if (width > 0 && height > 0) { camera.aspect = width / height; camera.updateProjectionMatrix(); }
+                else { console.warn("onWindowResize: Invalid window dimensions (<= 0)."); }
+            }
+            if (renderer) { renderer.setSize(window.innerWidth, window.innerHeight); }
         }
 
         function animate() {
-            requestAnimationFrame(animate);
-
-            // Rotate starfield slowly
-            if (starField) {
-                starField.rotation.y += 0.0001;
-                starField.rotation.x += 0.00005;
+             animationFrameId = requestAnimationFrame(animate);
+            try {
+                if (starField) { starField.rotation.y += 0.0001; starField.rotation.x += 0.00005; }
+                if (body1 && body2) { updatePhysics(); }
+                if (camera && controls) { adjustCamera(); } // Adjust camera based on new logic
+                if (controls) { controls.update(); } // Update controls (handles user input, damping)
+                if (renderer && scene && camera) { renderer.render(scene, camera); }
+            } catch(error) {
+                 console.error("Error during animation loop:", error);
+                 displayError(error.message, 'runtime');
             }
-
-            // Update physics based on current speed setting
-            updatePhysics();
-
-            // Update camera controls
-            controls.update();
-
-            // Render the scene
-            renderer.render(scene, camera);
         }
 
-        // Initialize and start animation on window load
         window.onload = () => {
-            init();
-            animate();
+            setTimeout(() => {
+                try { init(); animate(); }
+                catch (initError) { console.error("Failed to initialize simulation. Animation not started."); }
+            }, 100);
         };
 
     </script>
